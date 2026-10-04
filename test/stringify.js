@@ -847,6 +847,151 @@ test('stringify()', function (t) {
         st.end();
     });
 
+    t.test('passes a path array as the third argument to a filter function', function (st) {
+        var obj = { a: { b: 'c', d: ['e', 'f'] }, g: 'h' };
+        var paths = [];
+        qs.stringify(obj, {
+            encode: false,
+            filter: function (prefix, value, path) {
+                st.ok(Array.isArray(path), 'path is an array');
+                paths.push(path);
+                return value;
+            }
+        });
+
+        st.deepEqual(paths, [
+            [],
+            ['a'],
+            ['a', 'b'],
+            ['a', 'd'],
+            ['a', 'd', 0],
+            ['a', 'd', 1],
+            ['g']
+        ], 'lists every key from the root, with numeric array indices');
+        st.deepEqual(paths[0], [], 'the root is called with an empty array');
+
+        st.end();
+    });
+
+    t.test('the filter path array is independent of prefix-shaping options', function (st) {
+        var obj = { user: { password: 'p', name: 'n' }, users: [{ password: 'x' }, { password: 'y' }] };
+        var optionSets = [
+            {},
+            { allowDots: true },
+            { arrayFormat: 'brackets' },
+            { arrayFormat: 'brackets', allowDots: true },
+            { arrayFormat: 'repeat' },
+            { arrayFormat: 'indices', allowDots: true, encodeDotInKeys: true },
+            { arrayFormat: 'brackets', allowDots: true, encodeDotInKeys: true, encodeValuesOnly: true }
+        ];
+
+        var expected = JSON.stringify([
+            [],
+            ['user'],
+            ['user', 'name'],
+            ['user', 'password'],
+            ['users'],
+            ['users', 0],
+            ['users', 0, 'password'],
+            ['users', 1],
+            ['users', 1, 'password']
+        ]);
+
+        var prefixSets = [];
+        optionSets.forEach(function (options) {
+            var paths = [];
+            var prefixes = [];
+            qs.stringify(obj, {
+                allowDots: options.allowDots,
+                arrayFormat: options.arrayFormat,
+                encode: false,
+                encodeDotInKeys: options.encodeDotInKeys,
+                encodeValuesOnly: options.encodeValuesOnly,
+                filter: function (prefix, value, path) {
+                    paths.push(path);
+                    prefixes.push(prefix);
+                    return value;
+                },
+                sort: function (a, b) {
+                    return a < b ? -1 : a > b ? 1 : 0;
+                }
+            });
+            st.equal(JSON.stringify(paths), expected, JSON.stringify(options));
+            prefixSets.push(prefixes.join('|'));
+        });
+
+        st.notEqual(prefixSets[0], prefixSets[1], 'prefixes change with allowDots even though paths do not');
+        st.notEqual(prefixSets[0], prefixSets[2], 'prefixes change with arrayFormat even though paths do not');
+
+        st.end();
+    });
+
+    t.test('the filter path array keeps raw keys containing dots, brackets and percent signs', function (st) {
+        var obj = { 'a.b': 1, 'a[b]': { 'c%d': 2 }, a: { b: 3 } };
+        var paths = [];
+        qs.stringify(obj, {
+            allowDots: true,
+            encodeDotInKeys: true,
+            filter: function (prefix, value, path) {
+                paths.push(path);
+                return value;
+            }
+        });
+
+        st.deepEqual(paths, [
+            [],
+            ['a.b'],
+            ['a[b]'],
+            ['a[b]', 'c%d'],
+            ['a'],
+            ['a', 'b']
+        ], 'literal dots and brackets are not split or escaped');
+
+        st.end();
+    });
+
+    t.test('the filter path array enables masking by key name', function (st) {
+        var mask = function (prefix, value, path) {
+            return path[path.length - 1] === 'password' ? '***' : value;
+        };
+
+        st.equal(
+            qs.stringify({ user: { name: 'a', password: 'secret' } }, { allowDots: true, filter: mask }),
+            'user.name=a&user.password=%2A%2A%2A'
+        );
+        st.equal(
+            qs.stringify({ users: [{ name: 'a', password: 'secret' }] }, { arrayFormat: 'brackets', filter: mask }),
+            'users%5B%5D%5Bname%5D=a&users%5B%5D%5Bpassword%5D=%2A%2A%2A'
+        );
+        st.equal(
+            qs.stringify({ user: { 'password.again': 'literal' } }, { allowDots: true, encodeDotInKeys: true, encodeValuesOnly: true, filter: mask }),
+            'user.password%2Eagain=literal',
+            'a literal dotted key is not mistaken for a nested password'
+        );
+        st.equal(
+            qs.stringify({ 'user.password': 'literal' }, { allowDots: true, encode: false, filter: mask }),
+            'user.password=literal',
+            'a literal dotted key has the same prefix as a nested one, but a different path'
+        );
+
+        st.end();
+    });
+
+    t.test('filter functions still work when they ignore the path argument', function (st) {
+        var calls = [];
+        var legacy = function (prefix, value) {
+            calls.push(prefix);
+            if (prefix === 'b') {
+                return void undefined;
+            }
+            return value;
+        };
+
+        st.equal(qs.stringify({ a: 1, b: 2 }, { filter: legacy }), 'a=1');
+        st.deepEqual(calls, ['', 'a', 'b']);
+        st.end();
+    });
+
     t.test('can disable uri encoding', function (st) {
         st.equal(qs.stringify({ a: 'b' }, { encode: false }), 'a=b');
         st.equal(qs.stringify({ a: { b: 'c' } }, { encode: false }), 'a[b]=c');
