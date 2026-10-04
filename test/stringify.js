@@ -847,6 +847,189 @@ test('stringify()', function (t) {
         st.end();
     });
 
+    t.test('passes a structural key path as the third filter argument', function (st) {
+        var obj = {
+            users: [{ name: 'a', password: 'x' }],
+            'a.b': { password: 'y' },
+            'c[d]': 'e',
+            pct: '%'
+        };
+        var expected = [
+            [],
+            ['users'],
+            ['users', 0],
+            ['users', 0, 'name'],
+            ['users', 0, 'password'],
+            ['a.b'],
+            ['a.b', 'password'],
+            ['c[d]'],
+            ['pct']
+        ];
+
+        var collectPaths = function (paths) {
+            return function (prefix, value, path) {
+                st.ok(Array.isArray(path), 'path is an array for prefix ' + prefix);
+                paths.push(path);
+                return value;
+            };
+        };
+
+        var optionSets = [
+            {},
+            { arrayFormat: 'indices' },
+            { arrayFormat: 'brackets' },
+            { arrayFormat: 'repeat' },
+            { allowDots: true },
+            { allowDots: true, encodeDotInKeys: true },
+            { encodeDotInKeys: true },
+            { encodeValuesOnly: true },
+            { allowDots: true, encodeValuesOnly: true }
+        ];
+
+        optionSets.forEach(function (options) {
+            var paths = [];
+            qs.stringify(obj, Object.assign({}, options, { filter: collectPaths(paths) }));
+            st.deepEqual(paths, expected, 'paths with options ' + JSON.stringify(options));
+        });
+
+        st.end();
+    });
+
+    t.test('path is an empty array at the root call', function (st) {
+        var rootPath;
+        var obj = { a: 'b' };
+        qs.stringify(obj, {
+            filter: function (prefix, value, path) {
+                if (prefix === '' && value === obj) {
+                    rootPath = path;
+                }
+                return value;
+            }
+        });
+        st.deepEqual(rootPath, []);
+        st.end();
+    });
+
+    t.test('path uses numbers for array indices', function (st) {
+        var paths = [];
+        qs.stringify({ users: [{ name: 'a' }, { name: 'b' }] }, {
+            filter: function (prefix, value, path) {
+                paths.push(path);
+                return value;
+            }
+        });
+
+        st.deepEqual(paths, [
+            [],
+            ['users'],
+            ['users', 0],
+            ['users', 0, 'name'],
+            ['users', 1],
+            ['users', 1, 'name']
+        ]);
+        st.equal(typeof paths[2][1], 'number', 'array index is a number');
+        st.end();
+    });
+
+    t.test('path keeps literal dots and brackets in key names', function (st) {
+        var paths = [];
+        qs.stringify({ 'a.b': { 'c[d]': 1 } }, {
+            allowDots: true,
+            filter: function (prefix, value, path) {
+                paths.push(path);
+                return value;
+            }
+        });
+
+        st.deepEqual(paths, [
+            [],
+            ['a.b'],
+            ['a.b', 'c[d]']
+        ]);
+        st.end();
+    });
+
+    t.test('path is unaffected by arrayFormat and can drive masking', function (st) {
+        var obj = { users: [{ name: 'a', password: 'secret' }], 'a.b': { password: 's2' } };
+        var mask = function (prefix, value, path) {
+            return path[path.length - 1] === 'password' ? '***' : value;
+        };
+
+        st.equal(
+            qs.stringify(obj, { filter: mask }),
+            'users%5B0%5D%5Bname%5D=a&users%5B0%5D%5Bpassword%5D=%2A%2A%2A&a.b%5Bpassword%5D=%2A%2A%2A',
+            'indices'
+        );
+        st.equal(
+            qs.stringify(obj, { arrayFormat: 'brackets', filter: mask }),
+            'users%5B%5D%5Bname%5D=a&users%5B%5D%5Bpassword%5D=%2A%2A%2A&a.b%5Bpassword%5D=%2A%2A%2A',
+            'brackets'
+        );
+        st.equal(
+            qs.stringify(obj, { arrayFormat: 'repeat', filter: mask }),
+            'users%5Bname%5D=a&users%5Bpassword%5D=%2A%2A%2A&a.b%5Bpassword%5D=%2A%2A%2A',
+            'repeat'
+        );
+        st.equal(
+            qs.stringify(obj, { allowDots: true, filter: mask }),
+            'users%5B0%5D.name=a&users%5B0%5D.password=%2A%2A%2A&a.b.password=%2A%2A%2A',
+            'allowDots'
+        );
+
+        st.end();
+    });
+
+    t.test('path arrays are not shared between filter calls', function (st) {
+        var first;
+        qs.stringify({ a: { b: 1 } }, {
+            filter: function (prefix, value, path) {
+                if (prefix === 'a') {
+                    first = path;
+                } else if (prefix === 'a[b]') {
+                    st.notEqual(path, first, 'child path is a distinct array');
+                    st.deepEqual(first, ['a'], 'parent path is unchanged after descending');
+                }
+                return value;
+            }
+        });
+        st.end();
+    });
+
+    t.test('path is provided when arrayFormat is comma', function (st) {
+        var paths = [];
+        qs.stringify({ a: ['1', '2'], b: 3 }, {
+            arrayFormat: 'comma',
+            filter: function (prefix, value, path) {
+                paths.push(path);
+                return value;
+            }
+        });
+
+        st.deepEqual(paths, [
+            [],
+            ['a'],
+            ['a'],
+            ['b']
+        ]);
+        st.end();
+    });
+
+    t.test('filter function ignoring the third argument keeps working', function (st) {
+        var obj = { a: 'b', c: 'd' };
+        st.equal(
+            qs.stringify(obj, { filter: function (prefix, value) { return prefix === 'c' ? void undefined : value; } }),
+            'a=b'
+        );
+
+        var calls = [];
+        qs.stringify(
+            { a: { b: 1 } },
+            { filter: function (prefix, value) { calls.push([prefix, value]); return value; } }
+        );
+        st.equal(calls.length, 3, 'call count and timing are unchanged');
+        st.end();
+    });
+
     t.test('can disable uri encoding', function (st) {
         st.equal(qs.stringify({ a: 'b' }, { encode: false }), 'a=b');
         st.equal(qs.stringify({ a: { b: 'c' } }, { encode: false }), 'a[b]=c');
